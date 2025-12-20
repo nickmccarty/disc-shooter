@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gesture Range Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #fff;
+      touch-action: manipulation;
+    }
+    #container {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+    }
+    #three-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #video {
+      position: fixed;
+      right: 8px;
+      bottom: 8px;
+      width: 200px;
+      max-width: 30vw;
+      transform: scaleX(-1);
+      opacity: 0.35;
+      pointer-events: none;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.35);
+      z-index: 5;
+      background: #000;
+    }
+    @media (max-width: 480px) {
+      #video {
+        width: 140px;
+      }
+    }
+
+    #loadingOverlay {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(circle at center, #111 0%, #000 60%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      text-align: center;
+      padding: 0 20px;
+    }
+    #loadingOverlay h1 {
+      margin-bottom: 0.5rem;
+      font-size: 1.8rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    #loadingOverlay p {
+      opacity: 0.8;
+      margin-bottom: 1rem;
+      max-width: 400px;
+    }
+    #loadingBar {
+      width: 240px;
+      height: 6px;
+      background: rgba(255,255,255,0.12);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+      margin-bottom: 1rem;
+    }
+    #loadingBarInner {
+      position: absolute;
+      inset: 0;
+      width: 40%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #00e1ff, #ff00ff);
+      animation: loading-bar 1.2s infinite;
+    }
+    @keyframes loading-bar {
+      0%   { transform: translateX(-100%); }
+      50%  { transform: translateX(10%); }
+      100% { transform: translateX(120%); }
+    }
+
+    #startButton {
+      padding: 0.6rem 1.3rem;
+      font-size: 1rem;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.35);
+      background: rgba(0,0,0,0.65);
+      color: #fff;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+    }
+    #startButton:active {
+      transform: scale(0.97);
+    }
+
+    #hud {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 10;
+      font-size: 14px;
+      text-shadow: 0 0 4px #000;
+      background: rgba(0,0,0,0.35);
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+    #hud span.label {
+      opacity: 0.6;
+      margin-right: 4px;
+    }
+    #hud span.value {
+      font-weight: 600;
+    }
+
+    .floating-text {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 32px;
+      font-weight: 700;
+      pointer-events: none;
+      text-shadow: 0 0 8px rgba(0,0,0,0.8);
+      opacity: 0;
+      transition: transform 0.5s ease-out, opacity 0.5s ease-out;
+      z-index: 20;
+    }
+    .floating-text.show {
+      opacity: 1;
+      transform: translate(-50%, -60%);
+    }
+    .floating-text.hit {
+      color: #00ffae;
+    }
+    .floating-text.miss {
+      color: #ff3366;
+    }
+  </style>
+
+  <!-- Three.js via import map (works on localhost and GitHub Pages) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.159.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <!-- MediaPipe Hands pinned to 0.4.1646424915 from unpkg -->
+  <script src="https://unpkg.com/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+</head>
+<body>
+  <div id="container">
+    <canvas id="three-canvas"></canvas>
+  </div>
+
+  <!-- Camera preview -->
+  <video id="video" playsinline></video>
+
+  <!-- Loading / start overlay -->
+  <div id="loadingOverlay">
+    <h1>Gesture Range</h1>
+    <p>
+      Run via <code>http://localhost</code> or HTTPS, then tap Start.<br />
+      Hold your hand like a pistol and pull your thumb to shoot the flying discs.
+    </p>
+    <div id="loadingBar"><div id="loadingBarInner"></div></div>
+    <button id="startButton">Tap to Start</button>
+    <p style="font-size:12px; opacity:0.6;">
+      Camera access and a user gesture are required for hand tracking and sound.
+    </p>
+  </div>
+
+  <div id="hud">
+    <div><span class="label">Score</span><span class="value" id="scoreValue">0</span></div>
+    <div><span class="label">Shots</span><span class="value" id="shotsValue">0</span></div>
+  </div>
+
+  <div id="floatingText" class="floating-text">HIT</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // DOM refs
+    const canvas = document.getElementById('three-canvas');
+    const videoEl = document.getElementById('video');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const startButton = document.getElementById('startButton');
+    const scoreValue = document.getElementById('scoreValue');
+    const shotsValue = document.getElementById('shotsValue');
+    const floatingText = document.getElementById('floatingText');
+
+    // Three.js state
+    let renderer, scene, camera;
+    let aimDir = new THREE.Vector3(0, 0, -1);
+    let aimPoint = new THREE.Vector3(0, 0, -10);
+
+    let discs = [];
+    const MAX_DISCS = 4;
+
+    let lastGestureTime = 0;
+    const GESTURE_COOLDOWN_MS = 250;
+
+    let lastAiTime = 0;
+    const AI_INTERVAL_MS = 120;
+
+    let lastFrameTime = performance.now();
+
+    let score = 0;
+    let shots = 0;
+
+    // MediaPipe Hands instance
+    let hands = null;
+
+    // Audio
+    let hitAudioCtx = null;
+
+    function ensureAudioContext() {
+      try {
+        if (!hitAudioCtx) {
+          hitAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        } else if (hitAudioCtx.state === 'suspended') {
+          hitAudioCtx.resume();
+        }
+      } catch (e) {
+        console.warn('AudioContext init failed', e);
+      }
+    }
+
+    function playHitSound(success) {
+      try {
+        if (!hitAudioCtx) return;
+        const ctx = hitAudioCtx;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.type = success ? 'square' : 'sawtooth';
+        const base = success ? 880 : 220;
+        const end = success ? 440 : 110;
+
+        osc.frequency.setValueAtTime(base, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(end, ctx.currentTime + 0.25);
+
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+      } catch (e) {
+        console.warn('playHitSound failed', e);
+      }
+    }
+
+    function showFloatingText(hit) {
+      floatingText.textContent = hit ? 'HIT' : 'MISS';
+      floatingText.classList.remove('hit', 'miss', 'show');
+      void floatingText.offsetWidth;
+      floatingText.classList.add(hit ? 'hit' : 'miss');
+      floatingText.classList.add('show');
+      setTimeout(() => floatingText.classList.remove('show'), 500);
+    }
+
+    // ---------- Three.js scene ----------
+    function initThree() {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000);
+
+      camera = new THREE.PerspectiveCamera(
+        60,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        100
+      );
+      camera.position.set(0, 0, 0);
+
+      const light = new THREE.DirectionalLight(0xffffff, 1.0);
+      light.position.set(3, 5, 2);
+      scene.add(light);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+      const grid = new THREE.GridHelper(20, 20, 0x333333, 0x111111);
+      grid.position.y = -4;
+      scene.add(grid);
+
+      const laserGeom = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -10)
+      ]);
+      const laserMat = new THREE.LineBasicMaterial({ color: 0xff0077 });
+      const laser = new THREE.Line(laserGeom, laserMat);
+      laser.name = 'laser';
+      scene.add(laser);
+
+      const crossGeom = new THREE.RingGeometry(0.1, 0.13, 32);
+      const crossMat = new THREE.MeshBasicMaterial({
+        color: 0x00ffff,
+        side: THREE.DoubleSide
+      });
+      const cross = new THREE.Mesh(crossGeom, crossMat);
+      cross.position.copy(aimPoint);
+      cross.lookAt(camera.position);
+      cross.name = 'crosshair';
+      scene.add(cross);
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    // ---------- Discs ----------
+    function spawnDisc() {
+      const radius = 0.7;
+      const thickness = 0.15;
+      const geom = new THREE.CylinderGeometry(radius, radius, thickness, 32);
+      const color = new THREE.Color().setHSL(Math.random(), 0.7, 0.5);
+      const mat = new THREE.MeshStandardMaterial({
+        color,
+        metalness: 0.4,
+        roughness: 0.3,
+        emissive: color.clone().multiplyScalar(0.3)
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.rotation.x = Math.PI / 2;
+
+      const angle = Math.random() * Math.PI * 2;
+      const r = 10 + Math.random() * 4;
+      const x = Math.cos(angle) * r;
+      const z = Math.sin(angle) * r - 10;
+      const y = (Math.random() - 0.5) * 4;
+      mesh.position.set(x, y, z);
+
+      const target = new THREE.Vector3(0, 0, -8);
+      const dir = target.clone().sub(mesh.position).normalize();
+      const speed = 0.8 + Math.random() * 0.6;
+      const velocity = dir.multiplyScalar(speed);
+
+      scene.add(mesh);
+      discs.push({ mesh, velocity, radius });
+    }
+
+    function ensureDiscs() {
+      while (discs.length < MAX_DISCS) spawnDisc();
+    }
+
+    function updateDiscs(dt) {
+      const center = new THREE.Vector3(0, 0, -8);
+      for (let i = discs.length - 1; i >= 0; i--) {
+        const d = discs[i];
+        d.mesh.position.addScaledVector(d.velocity, dt);
+        d.mesh.rotation.z += dt * 2;
+        if (d.mesh.position.distanceTo(center) < 0.5) {
+          scene.remove(d.mesh);
+          discs.splice(i, 1);
+        }
+      }
+      ensureDiscs();
+    }
+
+    // ---------- Aim & magnetic assist ----------
+    function applyMagneticAim() {
+      if (!camera) return;
+
+      let bestDisc = null;
+      let bestDist = Infinity;
+      const origin = camera.position;
+      const rayDir = aimDir.clone().normalize();
+      const tmp = new THREE.Vector3();
+
+      for (const d of discs) {
+        const toDisc = tmp.copy(d.mesh.position).sub(origin);
+        const projLen = toDisc.dot(rayDir);
+        if (projLen < 0) continue;
+        const closestPoint = origin.clone().addScaledVector(rayDir, projLen);
+        const dist = closestPoint.distanceTo(d.mesh.position);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestDisc = d;
+        }
+      }
+
+      if (bestDisc && bestDist < 3.0) {
+        const targetDir = bestDisc.mesh.position.clone().sub(origin).normalize();
+        aimDir.lerp(targetDir, 0.15);
+      }
+
+      const laser = scene.getObjectByName('laser');
+      const cross = scene.getObjectByName('crosshair');
+      if (laser) {
+        const pts = laser.geometry.attributes.position.array;
+        pts[0] = 0; pts[1] = 0; pts[2] = 0;
+        const end = aimDir.clone().multiplyScalar(12);
+        pts[3] = end.x; pts[4] = end.y; pts[5] = end.z;
+        laser.geometry.attributes.position.needsUpdate = true;
+      }
+      if (cross) {
+        aimPoint.copy(aimDir).multiplyScalar(10);
+        cross.position.copy(aimPoint);
+        cross.lookAt(camera.position);
+      }
+    }
+
+    function fireShot() {
+      const now = performance.now();
+      if (now - lastGestureTime < GESTURE_COOLDOWN_MS) return;
+      lastGestureTime = now;
+
+      shots++;
+      shotsValue.textContent = shots.toString();
+
+      const rayOrigin = camera.position.clone();
+      const rayDir = aimDir.clone().normalize();
+      let hit = false;
+      let hitIndex = -1;
+      let hitDistance = Infinity;
+      const tmp = new THREE.Vector3();
+
+      discs.forEach((d, idx) => {
+        const toDisc = tmp.copy(d.mesh.position).sub(rayOrigin);
+        const projLen = toDisc.dot(rayDir);
+        if (projLen < 0) return;
+        const closestPoint = rayOrigin.clone().addScaledVector(rayDir, projLen);
+        const dist = closestPoint.distanceTo(d.mesh.position);
+        if (dist <= d.radius * 1.2 && projLen < hitDistance) {
+          hitDistance = projLen;
+          hit = true;
+          hitIndex = idx;
+        }
+      });
+
+      if (hit && hitIndex >= 0) {
+        const d = discs[hitIndex];
+        spawnShatter(d.mesh.position.clone(), d.radius);
+        scene.remove(d.mesh);
+        discs.splice(hitIndex, 1);
+        score++;
+        scoreValue.textContent = score.toString();
+        showFloatingText(true);
+        playHitSound(true);
+      } else {
+        showFloatingText(false);
+        playHitSound(false);
+      }
+    }
+
+    function spawnShatter(position, radius) {
+      const count = 40;
+      const geom = new THREE.BufferGeometry();
+      const positions = new Float32Array(count * 3);
+      const colors = new Float32Array(count * 3);
+      const color = new THREE.Color(1, 0.8, 0.4);
+
+      for (let i = 0; i < count; i++) {
+        const r = radius * (0.3 + Math.random());
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.random() * Math.PI;
+        const x = position.x + r * Math.sin(phi) * Math.cos(theta);
+        const y = position.y + r * Math.cos(phi);
+        const z = position.z + r * Math.sin(phi) * Math.sin(theta);
+        positions[i*3+0] = x;
+        positions[i*3+1] = y;
+        positions[i*3+2] = z;
+        colors[i*3+0] = color.r;
+        colors[i*3+1] = color.g;
+        colors[i*3*2] = color.b;
+      }
+      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const mat = new THREE.PointsMaterial({ size: 0.06, vertexColors: true });
+      const points = new THREE.Points(geom, mat);
+      scene.add(points);
+
+      const start = performance.now();
+      function animateBurst() {
+        const t = (performance.now() - start) / 400;
+        if (t >= 1) {
+          scene.remove(points);
+          geom.dispose();
+          mat.dispose();
+          return;
+        }
+        points.material.size = 0.06 * (1 - t);
+        requestAnimationFrame(animateBurst);
+      }
+      requestAnimationFrame(animateBurst);
+    }
+
+    // ---------- Gesture logic ----------
+    function isPistolGesture(landmarks) {
+      const WRIST = 0;
+      const INDEX_TIP = 8;
+      const INDEX_PIP = 6;
+      const MIDDLE_TIP = 12;
+      const RING_TIP = 16;
+      const PINKY_TIP = 20;
+
+      const wrist = landmarks[WRIST];
+      const idxTip = landmarks[INDEX_TIP];
+      const idxPip = landmarks[INDEX_PIP];
+      const midTip = landmarks[MIDDLE_TIP];
+      const ringTip = landmarks[RING_TIP];
+      const pinkyTip = landmarks[PINKY_TIP];
+
+      function dist(a, b) {
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const dz = (a.z || 0) - (b.z || 0);
+        return Math.sqrt(dx*dx + dy*dy + dz*dz);
+      }
+
+      const indexExtended = dist(idxTip, wrist) > dist(idxPip, wrist) * 1.1;
+      const middleFolded = dist(midTip, wrist) < 0.25;
+      const ringFolded = dist(ringTip, wrist) < 0.25;
+      const pinkyFolded = dist(pinkyTip, wrist) < 0.25;
+
+      return indexExtended && middleFolded && ringFolded && pinkyFolded;
+    }
+
+    let lastThumbIndexDist = null;
+
+    function detectTriggerPull(landmarks) {
+      const THUMB_TIP = 4;
+      const INDEX_BASE = 5;
+      function dist(a, b) {
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const dz = (a.z || 0) - (b.z || 0);
+        return Math.sqrt(dx*dx + dy*dy + dz*dz);
+      }
+      const d = dist(landmarks[THUMB_TIP], landmarks[INDEX_BASE]);
+      let triggered = false;
+      if (lastThumbIndexDist != null && lastThumbIndexDist - d > 0.05) {
+        triggered = true;
+      }
+      lastThumbIndexDist = d;
+      return triggered;
+    }
+
+    function updateAimFromHand(landmarks) {
+      const INDEX_MCP = 5;
+      const INDEX_TIP = 8;
+      const base = landmarks[INDEX_MCP];
+      const tip = landmarks[INDEX_TIP];
+
+      const dx = tip.x - base.x;
+      const dy = tip.y - base.y;
+
+      const ndcX = (0.5 - (base.x + dx * 0.6)) * 2;
+      const ndcY = ((base.y + dy * 0.6) - 0.5) * 2;
+
+      const tmp = new THREE.Vector3(ndcX, ndcY, -1).normalize();
+      aimDir.lerp(tmp, 0.3);
+    }
+
+    function onResults(results) {
+      const now = performance.now();
+      if (now - lastAiTime < AI_INTERVAL_MS) return;
+      lastAiTime = now;
+
+      try {
+        const multiHandLandmarks = results.multiHandLandmarks || [];
+        if (!multiHandLandmarks.length) {
+          lastThumbIndexDist = null;
+          return;
+        }
+        const handLm = multiHandLandmarks[0];
+
+        if (isPistolGesture(handLm)) {
+          updateAimFromHand(handLm);
+          if (detectTriggerPull(handLm)) fireShot();
+        } else {
+          lastThumbIndexDist = null;
+        }
+      } catch (e) {
+        console.error('Gesture loop error', e);
+      }
+    }
+
+    // ---------- MediaPipe + camera ----------
+    async function initMediaPipeAndCamera() {
+      return new Promise(async (resolve, reject) => {
+        try {
+          console.log('Initializing MediaPipe Hands + getUserMedia...');
+          hands = new Hands({
+            locateFile: (file) =>
+              `https://unpkg.com/@mediapipe/hands@0.4.1646424915/${file}`
+          });
+          hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.5
+          });
+          hands.onResults(onResults);
+
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              facingMode: 'user'
+            },
+            audio: false
+          }); /* secure context / localhost needed */
+
+          videoEl.srcObject = stream;
+          await videoEl.play();
+
+          async function processFrame() {
+            if (videoEl.readyState >= 2) {
+              try {
+                await hands.send({ image: videoEl });
+              } catch (e) {
+                console.error('hands.send error', e);
+              }
+            }
+            requestAnimationFrame(processFrame);
+          }
+          requestAnimationFrame(processFrame);
+
+          resolve();
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }
+
+    // ---------- Animation loop ----------
+    function animate() {
+      requestAnimationFrame(animate);
+      const now = performance.now();
+      const dt = Math.min((now - lastFrameTime) / 1000, 0.05);
+      lastFrameTime = now;
+
+      updateDiscs(dt);
+      applyMagneticAim();
+      renderer.render(scene, camera);
+    }
+
+    // ---------- Start ----------
+    async function startGame() {
+      try {
+        console.log('Starting Gesture Range demo...');
+        ensureAudioContext();
+        initThree();
+        ensureDiscs();
+        await initMediaPipeAndCamera();
+        loadingOverlay.style.display = 'none';
+        animate();
+        console.log('Game started successfully.');
+      } catch (e) {
+        console.error('Initialization error', e);
+        const msg = loadingOverlay.querySelector('p');
+        if (msg) {
+          msg.textContent =
+            'Failed to initialize camera or hand tracking. Check permissions, ensure localhost or HTTPS, then reload.';
+        }
+        startButton.disabled = false;
+      }
+    }
+
+    startButton.addEventListener('click', () => {
+      startButton.disabled = true;
+      startGame();
+    });
+  </script>
+</body>
+</html>
